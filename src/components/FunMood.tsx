@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type Todo = {
@@ -12,17 +12,21 @@ export default function FunMood() {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
-  // helper
-  const showToast = (message: string) => {
-    setToast(message);
-    setTimeout(() => setToast(null), 2000);
-  };
+  const toastTimer = useRef<number | null>(null);
+  const count = useMemo(() => todos.length, [todos]);
 
-  // FETCH
-  const fetchTodos = async () => {
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 2000);
+  }, []);
+
+  const fetchTodos = useCallback(async () => {
+    setError(null);
     const { data, error } = await supabase
       .from("todo")
       .select("id, text")
@@ -30,53 +34,82 @@ export default function FunMood() {
 
     if (error) {
       setError(error.message);
-    } else {
-      setTodos(data ?? []);
+      return;
     }
-    setLoading(false);
-  };
 
-  useEffect(() => {
-    fetchTodos();
+    setTodos((data ?? []) as Todo[]);
   }, []);
 
-  // ADD
-  const addTodo = async () => {
-    if (!text.trim()) return;
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      await fetchTodos();
+      if (alive) setLoading(false);
+    })();
+    return () => {
+      alive = false;
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    };
+  }, [fetchTodos]);
 
-    const { error } = await supabase.from("todo").insert({ text });
+  const addTodo = useCallback(async () => {
+    const value = text.trim();
+    if (!value || busy) return;
+
+    setBusy(true);
+    setError(null);
+
+    const { error } = await supabase.from("todo").insert({ text: value });
 
     if (error) {
       setError(error.message);
-    } else {
-      setText("");
-      showToast("Added successfully ✅");
-      fetchTodos();
+      setBusy(false);
+      return;
     }
-  };
 
-  // DELETE
-  const deleteTodo = async (id: number) => {
-    const { error } = await supabase.from("todo").delete().eq("id", id);
+    setText("");
+    showToast("Added successfully ✅");
+    await fetchTodos();
+    setBusy(false);
+  }, [text, busy, fetchTodos, showToast]);
 
-    if (error) {
-      setError(error.message);
-    } else {
+  const deleteTodo = useCallback(
+    async (id: number) => {
+      if (busy) return;
+
+      setBusy(true);
+      setError(null);
+
+      const { error } = await supabase.from("todo").delete().eq("id", id);
+
+      if (error) {
+        setError(error.message);
+        setBusy(false);
+        return;
+      }
+
       setTodos((prev) => prev.filter((t) => t.id !== id));
       showToast("Deleted successfully 🗑️");
-    }
-  };
+      setBusy(false);
+    },
+    [busy, showToast],
+  );
 
   return (
     <div className="max-w-md mx-auto mt-10 space-y-4">
       {/* TOAST */}
       {toast && (
-        <div className="fixed top-5 right-5 bg-green-600 text-white text-sm px-4 py-2 rounded-md shadow">
+        <div className="fixed top-5 right-5 bg-gray-200 text-black text-sm px-4 py-2 rounded-md shadow">
           {toast}
         </div>
       )}
 
       <h1 className="text-2xl font-semibold text-center">Todo List</h1>
+
+      <p className="text-center text-sm text-muted-foreground">
+        Total todos: <span className="font-medium">{count}</span>
+      </p>
 
       {/* ADD INPUT */}
       <div className="flex gap-2">
@@ -91,12 +124,14 @@ export default function FunMood() {
           }}
           placeholder="New todo..."
           className="flex-1 border px-3 py-2 rounded-md text-sm"
+          disabled={busy}
         />
         <button
           onClick={addTodo}
-          className="px-3 py-2 text-sm rounded-md bg-black text-white"
+          className="px-3 py-2 text-sm rounded-md bg-black text-white disabled:opacity-60"
+          disabled={busy || !text.trim()}
         >
-          Add
+          {busy ? "..." : "Add"}
         </button>
       </div>
 
@@ -119,9 +154,11 @@ export default function FunMood() {
                 <span>► {todo.text}</span>
                 <button
                   onClick={() => deleteTodo(todo.id)}
-                  className="text-red-500 text-xs"
+                  className="text-white text-xs bg-red-400 px-2 py-1 rounded-full font-bold disabled:opacity-60"
+                  disabled={busy}
+                  aria-label={`Delete todo ${todo.id}`}
                 >
-                  Delete
+                  X
                 </button>
               </li>
             ))
